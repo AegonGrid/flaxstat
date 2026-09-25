@@ -4,6 +4,7 @@ from pathlib import Path
 import geopandas as gpd
 import matplotlib.pyplot as plt
 import pandas as pd
+from matplotlib.cm import ScalarMappable
 from matplotlib.colors import Normalize
 from matplotlib.ticker import MaxNLocator
 
@@ -17,8 +18,8 @@ NUTS_URL = (
 METRICS = {"AR_THS_HA": "area_ha", "HPRD_HUMD_EU_THS_T": "prod_t"}
 PLOT_COLORS = ["#d95f02", "#1b9e77", "#7570b3"]
 COUNTRY_CODES = ["FR", "BE", "NL"]
-N_REGIONS = 10
-YEAR_OF_INTEREST = 2021
+N_REGIONS = 6
+N_YEAR = 12
 
 
 def load_flax_data(
@@ -193,52 +194,77 @@ def mainland_bounds(
     return largest_parts.union_all().bounds
 
 
-def save_maps(data: pd.DataFrame, year_of_interest: int) -> None:
+def save_maps(data: pd.DataFrame) -> None:
     regions = load_boundaries(2)
     countries = load_boundaries(0)
     country_codes = data["country_code"].drop_duplicates().tolist()
-    year_of_interest = year_of_interest
-    mapped = regions.merge(
-        data[data["year"] == year_of_interest],
-        left_on="NUTS_ID",
-        right_on="region_code",
-    )
-    yield_min = int(data["yield_t_ha"].min())
-    yield_max = ceil(data["yield_t_ha"].max())
-    yield_norm = Normalize(vmin=yield_min, vmax=yield_max)
-    yield_ticks = [
-        ceil(yield_norm.vmin + (yield_norm.vmax - yield_norm.vmin) * step / 4)
-        for step in range(5)
-    ]
+    years = sorted(data["year"].dropna().unique())[-N_YEAR:]
     labels = {
         "yield_t_ha": "Yield (t/ha)",
         "area_ha": "Area (ha)",
         "prod_t": "Production (t)",
     }
     for metric, label in labels.items():
-        figure, axis = plt.subplots(figsize=(11, 8))
-        mapped.plot(
-            column=metric,
-            ax=axis,
-            cmap="RdYlGn" if metric == "yield_t_ha" else "YlGnBu",
-            norm=yield_norm if metric == "yield_t_ha" else None,
-            vmin=yield_norm.vmin if metric == "yield_t_ha" else None,
-            vmax=yield_norm.vmax if metric == "yield_t_ha" else None,
-            legend=True,
-            legend_kwds=({"ticks": yield_ticks} if metric == "yield_t_ha" else {}),
-            missing_kwds={"color": "#eeeeee"},
+        cmap = plt.get_cmap("RdYlGn" if metric == "yield_t_ha" else "YlGnBu")
+        metric_values = data[data["year"].isin(years)][metric].dropna()
+        norm = Normalize(vmin=metric_values.min(), vmax=metric_values.max())
+        n_columns = min(4, len(years))
+        n_rows = ceil(len(years) / n_columns)
+        figure, axes = plt.subplots(
+            n_rows,
+            n_columns,
+            figsize=(5 * n_columns + 1.2, 4.5 * n_rows),
+            squeeze=False,
+            layout="constrained",
         )
-        selected_countries = countries[countries["CNTR_CODE"].isin(country_codes)]
-        selected_countries.boundary.plot(ax=axis, color="#333333", linewidth=0.45)
+        figure.set_constrained_layout_pads(
+            w_pad=0.02, h_pad=0.02, wspace=0.02, hspace=0.02
+        )
         min_x, min_y, max_x, max_y = mainland_bounds(countries, country_codes)
         padding_x = max((max_x - min_x) * 0.08, 1)
         padding_y = max((max_y - min_y) * 0.08, 1)
-        axis.set_xlim(min_x - padding_x, max_x + padding_x)
-        axis.set_ylim(min_y - padding_y, max_y + padding_y)
-        axis.set(title=f"Flax {label.lower()} by NUTS2 region, {year_of_interest}")
-        axis.set_axis_off()
-        figure.subplots_adjust(left=0.02, right=0.87, top=0.93, bottom=0.02)
-        figure.savefig(OUTPUT_DIR / f"map_{metric}_{year_of_interest}.png", dpi=160)
+        selected_countries = countries[countries["CNTR_CODE"].isin(country_codes)]
+        for axis, year in zip(axes.flat, years):
+            mapped = regions.merge(
+                data[data["year"] == year],
+                left_on="NUTS_ID",
+                right_on="region_code",
+            )
+            mapped.plot(
+                column=metric,
+                ax=axis,
+                cmap=cmap,
+                norm=norm,
+                legend=False,
+                missing_kwds={"color": "#eeeeee"},
+            )
+            selected_countries.boundary.plot(ax=axis, color="#333333", linewidth=0.45)
+            axis.set_xlim(min_x - padding_x, max_x + padding_x)
+            axis.set_ylim(min_y - padding_y, max_y + padding_y)
+            axis.set_axis_off()
+            axis.text(
+                0.05,
+                0.95,
+                str(year),
+                transform=axis.transAxes,
+                ha="left",
+                va="top",
+                fontsize=14,
+                fontweight="bold",
+                bbox={"facecolor": "white", "edgecolor": "none", "alpha": 0.8},
+            )
+        for axis in axes.flat[len(years) :]:
+            axis.set_visible(False)
+        figure.colorbar(
+            ScalarMappable(norm=norm, cmap=cmap),
+            ax=axes.ravel().tolist(),
+            label=label,
+            shrink=0.85,
+        )
+        figure.suptitle(
+            f"Flax {label.lower()} by NUTS2 region", fontsize=18, fontweight="bold"
+        )
+        figure.savefig(OUTPUT_DIR / f"map_{metric}.png", dpi=160)
         plt.close(figure)
 
 
@@ -247,7 +273,7 @@ def main() -> None:
     data = load_flax_data(country_codes=COUNTRY_CODES)
     data.to_csv(OUTPUT_DIR / "clean_apro_cpshr_flax.csv", index=False)
     save_timeseries(data)
-    save_maps(data, year_of_interest=YEAR_OF_INTEREST)
+    save_maps(data)
     print(f"Wrote cleaned data and nine plots to {OUTPUT_DIR}")
 
 
